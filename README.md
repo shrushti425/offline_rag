@@ -1,158 +1,170 @@
-# 🧠 Edge AI Knowledge Assistant
-### Offline RAG System — Mac Development → Jetson Nano Deployment
+# EdgeRAG: A Privacy-Preserving Offline Retrieval-Augmented Generation System for NVIDIA Jetson Nano
 
-> Upload documents. Ask questions. Get accurate answers.  
-> **Completely offline. No cloud. No API keys. No data leakage.**
+A document question-answering system that runs entirely on-device. Documents are indexed, retrieved, and answered locally on a 4 GB NVIDIA Jetson Nano, with no cloud services, no API keys, and no network access required at inference time.
 
 ---
 
-## What Is This?
+## Table of Contents
 
-A fully offline **Retrieval-Augmented Generation (RAG)** system that lets you query your own PDF documents in natural language — without sending anything to the internet.
-
-Built for edge deployment on **NVIDIA Jetson Nano**, with a Mac-first development workflow so you can build and test everything locally before deploying to hardware.
-
-**The core idea:** Instead of using ChatGPT's general knowledge, this system reads *your* documents, finds the most relevant sections, and generates answers grounded only in that content — all on your own machine.
+1. [Overview](#overview)
+2. [Motivation](#motivation)
+3. [Problem Statement](#problem-statement)
+4. [Key Features](#key-features)
+5. [System Architecture](#system-architecture)
+6. [Tech Stack](#tech-stack)
+7. [Repository Structure](#repository-structure)
+8. [Installation and Usage](#installation-and-usage)
+9. [Deployment on NVIDIA Jetson Nano](#deployment-on-nvidia-jetson-nano)
+10. [Evaluation](#evaluation)
+11. [Limitations](#limitations)
+12. [Future Work](#future-work)
+13. [Acknowledgements](#acknowledgements)
 
 ---
 
-## How It Works
+## Overview
+
+EdgeRAG lets a user upload PDF documents and query them in natural language. The system retrieves the most relevant passages from the uploaded documents and passes only those passages to a locally hosted language model, which generates an answer with page-level source citations.
+
+The system was developed on macOS (Ollama + TinyLlama) and deployed on an NVIDIA Jetson Nano (llama.cpp with CUDA, 4-bit quantised TinyLlama). Only the LLM wrapper differs between the two environments; the ingestion, embedding, retrieval, and interface layers are shared.
+
+## Motivation
+
+Most retrieval-augmented generation systems assume either a cloud API or a high-end GPU. That assumption excludes a large class of real deployments: factory floors with restricted networks, clinics and law offices handling confidential records, and institutions where API costs or connectivity are barriers.
+
+This project investigates how much of a practical RAG pipeline can be made to run on a low-cost, low-power edge device (a Jetson Nano costs roughly 99 USD), and where the real constraints appear: memory, latency, and model quality at small parameter counts.
+
+## Problem Statement
+
+Cloud-hosted language models create three problems for document question answering over sensitive or domain-specific material:
+
+- **Privacy.** Uploading internal documents to a third-party service may be prohibited or undesirable.
+- **Connectivity and cost.** API-based systems fail without reliable internet and incur per-request costs.
+- **Hallucination.** General-purpose models answer from training data rather than from the user's documents.
+
+EdgeRAG addresses these by keeping all data and computation on the device and constraining the model to answer from retrieved passages only.
+
+## Key Features
+
+- Fully offline inference: no external API calls once models are downloaded
+- Multi-PDF ingestion with page-level metadata
+- Source citations (filename and page) attached to every answer
+- Retrieved-context viewer, so users can inspect exactly which passages the model saw
+- Persistent local vector index across sessions
+- Identical pipeline on development (macOS) and target (Jetson Nano) hardware, with a single swappable LLM module
+- Built-in benchmarking script for latency and memory measurement
+
+## System Architecture
 
 ```
-PDF Upload → Text Extraction → Chunking → Embedding → FAISS Store
-                                                            ↓
-User Question → Embed Question → Vector Search → Top-K Chunks
-                                                            ↓
-                                          Local LLM → Grounded Answer
+PDF upload -> text extraction -> chunking -> embedding -> FAISS index
+                                                              |
+User question -> embed query -> vector search -> top-k chunks
+                                                              |
+                                          local LLM -> grounded answer + citations
 ```
 
-1. **Ingest** — PDFs are parsed, split into 500-character chunks, and stored with metadata (filename, page number)
-2. **Embed** — Each chunk is converted into a 384-dim vector using `all-MiniLM-L6-v2`
-3. **Store** — Vectors are indexed in FAISS locally (no server required)
-4. **Query** — Your question is embedded, top-3 relevant chunks are retrieved
-5. **Generate** — A local LLM reads only those chunks and produces a grounded answer with source citations
-
----
+| Stage | Description |
+|---|---|
+| Ingestion | PDFs are parsed page by page with PyMuPDF; each page keeps filename and page number as metadata |
+| Chunking | Text is split into 500-character chunks using LangChain's recursive splitter |
+| Embedding | Each chunk is encoded as a 384-dimensional vector with `all-MiniLM-L6-v2` |
+| Indexing | Vectors are stored in a local FAISS index (CPU), persisted to disk |
+| Retrieval | The query is embedded and the top 3 chunks are retrieved by vector similarity |
+| Generation | The local LLM receives the retrieved chunks and the question, and returns an answer |
 
 ## Tech Stack
 
-| Component | Mac (Dev) | Jetson Nano (Deploy) |
+| Component | Development (macOS) | Deployment (Jetson Nano) |
 |---|---|---|
-| **PDF Parsing** | PyMuPDF (fitz) | PyMuPDF (fitz) |
-| **Text Chunking** | LangChain RecursiveTextSplitter | Same |
-| **Embeddings** | all-MiniLM-L6-v2 (80MB) | Same |
-| **Vector DB** | FAISS CPU | FAISS CPU |
-| **Local LLM** | Ollama + TinyLlama | llama.cpp (Q4_K_M) |
-| **UI** | Streamlit | Streamlit |
+| PDF parsing | PyMuPDF | PyMuPDF |
+| Chunking | LangChain RecursiveCharacterTextSplitter | Same |
+| Embeddings | all-MiniLM-L6-v2 (about 80 MB) | Same |
+| Vector store | FAISS (CPU) | FAISS (CPU) |
+| LLM runtime | Ollama | llama.cpp with CUDA |
+| LLM | TinyLlama 1.1B | TinyLlama 1.1B Chat, Q4_K_M (GGUF) |
+| Interface | Streamlit | Streamlit |
 
-> **Why two LLM setups?** Ollama doesn't support Jetson Nano's ARM64 + Maxwell GPU architecture. On Jetson, we use `llama.cpp` built directly with CUDA support. Everything else stays identical.
+Ollama does not support the Jetson Nano's ARM64 and Maxwell GPU combination, so the Jetson build uses llama.cpp compiled directly with CUDA support.
 
----
-
-## Project Structure
+## Repository Structure
 
 ```
-edge-rag/
+offline_rag/
 ├── ingestion/
-│   ├── parser.py          # PDF → pages with metadata
-│   └── chunker.py         # Pages → overlapping chunks
+│   ├── parser.py          # PDF -> pages with metadata
+│   └── chunker.py         # Pages -> chunks
 ├── embeddings/
-│   └── embedder.py        # Text → 384-dim vectors (MiniLM)
+│   └── embedder.py        # Text -> 384-dim vectors
 ├── vectorstore/
-│   └── store.py           # FAISS index: add / search / save / load
+│   └── store.py           # FAISS index: add, search, save, load
 ├── llm/
-│   └── local_llm.py       # Ollama wrapper (swap for llama.cpp on Jetson)
+│   └── local_llm.py       # LLM wrapper (Ollama; replaced by llama.cpp on Jetson)
 ├── rag/
-│   └── pipeline.py        # Full RAG chain: embed → retrieve → generate
+│   └── pipeline.py        # Retrieval and generation chain
 ├── eval/
-│   └── measure.py         # Latency, RAM, GPU benchmarking
-├── app.py                 # Streamlit UI
+│   └── measure.py         # Latency, RAM, and GPU benchmarking
+├── app.py                 # Streamlit interface
 └── requirements.txt
 ```
 
----
+## Installation and Usage
 
-## Quickstart (Mac)
+### Requirements
 
-### 1. Clone & set up environment
+- Python 3.9 or later (macOS development environment)
+- [Ollama](https://ollama.com) installed locally
+
+### Setup
 
 ```bash
-git clone https://github.com/your-username/edge-rag.git
-cd edge-rag
+git clone https://github.com/shrushti425/offline_rag.git
+cd offline_rag
 
 python3 -m venv venv
 source venv/bin/activate
-```
+pip install -r requirements.txt
 
-### 2. Install dependencies
-
-```bash
-pip install streamlit pymupdf sentence-transformers faiss-cpu langchain langchain-community ollama
-```
-
-### 3. Install Ollama and pull the model
-
-```bash
-# Install Ollama
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull TinyLlama (~700MB, one-time download)
 ollama pull tinyllama
 ```
 
-### 4. Run the app
+### Run
 
 ```bash
-# Terminal 1 — keep Ollama running
+# Terminal 1
 ollama serve
 
-# Terminal 2 — launch the UI
+# Terminal 2
 streamlit run app.py
 ```
 
-Open your browser at `http://localhost:8501`, upload a PDF, and start asking questions.
+Open `http://localhost:8501`, then:
 
----
+1. Upload one or more PDFs from the sidebar.
+2. Select **Index Documents** and wait for indexing to complete.
+3. Enter a question and select **Ask**.
+4. Expand **See retrieved context** to inspect the passages used.
 
-## Usage
+The index is saved to `vectorstore.pkl` and reloaded on the next session. **Clear Index** resets it.
 
-1. **Upload PDFs** using the sidebar file uploader
-2. Click **Index Documents** — wait for the spinner to finish
-3. Type a question in the main panel
-4. Click **Ask** — answer appears with page-level source citations
-5. Expand **"See retrieved context"** to see exactly which chunks the LLM used
+## Deployment on NVIDIA Jetson Nano
 
-The vector index is saved to `vectorstore.pkl` so it persists across sessions. Use **Clear Index** to reset.
+**Target environment:** Jetson Nano 4 GB, JetPack 4.6.x (Ubuntu 18.04).
 
----
-
-## Jetson Nano Deployment
-
-> Build and test everything on Mac first. Only swap `local_llm.py` for Jetson.
-
-### Prerequisites
-- JetPack 4.6.x (Ubuntu 18.04)
-- Python 3.6+
-- 4GB RAM Jetson Nano
-
-### Build llama.cpp on Jetson
+### 1. Build llama.cpp with CUDA
 
 ```bash
-# Install build tools
 sudo apt update && sudo apt install cmake build-essential python3-pip git -y
 
-# Clone and build with CUDA support
 git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp
-mkdir build && cd build
-cmake .. -DLLAMA_CUBLAS=ON    # enables Jetson Maxwell GPU
+cd llama.cpp && mkdir build && cd build
+cmake .. -DLLAMA_CUBLAS=ON
 make -j4
 
-# Install Python bindings
 pip3 install llama-cpp-python
 ```
 
-### Download a quantised model
+### 2. Download a quantised model
 
 ```bash
 mkdir -p models
@@ -160,7 +172,7 @@ wget https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/
   -O models/tinyllama.gguf
 ```
 
-### Swap the LLM wrapper
+### 3. Replace the LLM wrapper
 
 Replace `llm/local_llm.py` with:
 
@@ -172,9 +184,9 @@ class LocalLLM:
         self.llm = Llama(
             model_path=model_path,
             n_ctx=2048,
-            n_gpu_layers=20,   # offload to Jetson GPU
-            n_threads=4,       # Jetson has 4 CPU cores
-            verbose=False
+            n_gpu_layers=20,   # layers offloaded to the Jetson GPU
+            n_threads=4,       # Jetson Nano has 4 CPU cores
+            verbose=False,
         )
 
     def generate(self, prompt: str) -> str:
@@ -182,92 +194,75 @@ class LocalLLM:
             prompt,
             max_tokens=256,
             temperature=0.1,
-            stop=["</s>", "User:", "Question:"]
+            stop=["</s>", "User:", "Question:"],
         )
         return output["choices"][0]["text"].strip()
 ```
 
-Everything else — RAG pipeline, embeddings, FAISS, Streamlit — stays exactly the same.
+No other module changes. If the device runs out of memory, reduce `n_gpu_layers` or use a smaller model.
 
----
+## Evaluation
 
-## Performance Targets (Jetson Nano)
+### Methodology
 
-| Metric | Target | Tool |
+| Metric | Method |
+|---|---|
+| End-to-end latency | Wall-clock time per query, reported separately for retrieval and generation |
+| Peak memory | Resident memory sampled with `psutil` during a query |
+| Power draw | `tegrastats` on the Jetson Nano |
+| Retrieval quality | Hit rate at k=3: fraction of questions where at least one retrieved chunk contains the answer |
+| Answer quality | Manual grading against a fixed question set (correct, partially correct, incorrect) |
+
+**Test set:** `<number>` questions over `<number>` documents (`<document types and total pages>`).
+
+### Results
+
+| Metric | macOS (Ollama) | Jetson Nano (llama.cpp, Q4_K_M) |
 |---|---|---|
-| Response latency | < 60 seconds | `time.time()` |
-| RAM usage | < 3.5 GB | `psutil` |
-| Power consumption | Measured | `tegrastats` |
-| Answer accuracy | Manual eval | Test question set |
-| Retrieval precision | Top-3 chunk relevance | Manual inspection |
+| Mean latency (s) | `<measured>` | `<measured>` |
+| Retrieval latency (s) | `<measured>` | `<measured>` |
+| Generation latency (s) | `<measured>` | `<measured>` |
+| Peak RAM (GB) | `<measured>` | `<measured>` |
+| Mean power (W) | n/a | `<measured>` |
+| Retrieval hit rate @ 3 | `<measured>` | `<measured>` |
+| Answer accuracy | `<measured>` | `<measured>` |
 
-Run benchmarks with:
+### Reproducing the benchmarks
 
 ```bash
 python eval/measure.py
 ```
 
----
+Run the benchmark on the Jetson Nano and on the development machine against the same question set.
 
-## Domain Applications
+## Limitations
 
-This system can be specialised for any document-heavy domain:
+- TinyLlama (1.1B parameters) has limited reasoning ability; answer quality degrades on questions that need synthesis across several passages.
+- Only text-based PDFs are supported; scanned documents require OCR, which is not included.
+- Retrieval uses fixed-size character chunks and dense retrieval only, with no reranking.
+- The index is stored as a single pickle file and is not designed for large corpora.
 
-- **Manufacturing** — Machine SOPs, troubleshooting guides, safety manuals
-- **Healthcare** — Hospital protocols, internal guidelines (non-diagnostic)
-- **Legal** — Compliance manuals, company policies, government regulations
-- **Education** — Course material, college handbooks, campus knowledge bases
-- **Enterprise** — HR documents, onboarding guides, internal knowledge bases
+## Future Work
 
----
-
-## Why This Project Exists
-
-Most RAG systems assume cloud infrastructure or high-end hardware. This project explores what's possible on a **$99 edge device** — useful for:
-
-- Environments where internet is restricted or unreliable
-- Deployments where documents are too sensitive to send to the cloud
-- Cost-sensitive use cases that can't afford API bills
-- Academic research into edge AI optimisation
-
----
-
-## Troubleshooting
-
-| Error | Fix |
-|---|---|
-| `ollama: command not found` | Re-run the Ollama install curl command |
-| `ModuleNotFoundError` | Ensure `(venv)` is active, re-run `pip install` |
-| `Connection refused` | Run `ollama serve` in a separate terminal tab |
-| Slow responses | Expected — TinyLlama takes 10–20s on Mac CPU |
-| Poor answer quality | Try `ollama pull mistral` and update model name in `local_llm.py` |
-| Jetson: out of memory | Reduce `n_gpu_layers` in llama.cpp config, or use a smaller model |
-
----
-
-## Roadmap
-
-- [x] Core RAG pipeline (Mac)
-- [x] Streamlit UI with multi-PDF support
-- [x] Persistent vector store
-- [ ] Jetson Nano deployment with llama.cpp
-- [ ] Hardware benchmarking script
-- [ ] Role-based access control
-- [ ] Multi-device sync
-- [ ] Domain-specific fine-tuning support
-
----
+- Quantitative comparison of chunk size, overlap, and top-k settings
+- Hybrid retrieval (dense and keyword) with a lightweight reranker
+- Evaluation of alternative small models (for example Phi-2 and Qwen-1.5B) under the same memory budget
+- OCR support for scanned documents
+- Role-based access control for multi-user deployments
 
 ## Acknowledgements
 
-- [llama.cpp](https://github.com/ggerganov/llama.cpp) — Local LLM inference
-- [Ollama](https://ollama.com) — Mac LLM runtime
-- [FAISS](https://github.com/facebookresearch/faiss) — Vector similarity search
-- [Sentence Transformers](https://www.sbert.net/) — `all-MiniLM-L6-v2` embeddings
-- [LangChain](https://langchain.com) — Text chunking utilities
-- [Streamlit](https://streamlit.io) — UI framework
+- [llama.cpp](https://github.com/ggerganov/llama.cpp)
+- [Ollama](https://ollama.com)
+- [FAISS](https://github.com/facebookresearch/faiss)
+- [Sentence Transformers](https://www.sbert.net/)
+- [LangChain](https://langchain.com)
+- [Streamlit](https://streamlit.io)
+- [PyMuPDF](https://pymupdf.readthedocs.io)
 
----
+## Author
 
+Shrushti Raut
+[GitHub](https://github.com/shrushti425)
 *Capstone Project — Edge AI + RAG + Jetson Nano*
 
