@@ -8,17 +8,18 @@ A document question-answering system that runs entirely on-device. Documents are
 
 1. [Overview](#overview)
 2. [Motivation](#motivation)
-3. [Problem Statement](#problem-statement)
-4. [Key Features](#key-features)
-5. [System Architecture](#system-architecture)
-6. [Tech Stack](#tech-stack)
-7. [Repository Structure](#repository-structure)
-8. [Installation and Usage](#installation-and-usage)
-9. [Deployment on NVIDIA Jetson Nano](#deployment-on-nvidia-jetson-nano)
-10. [Evaluation](#evaluation)
-11. [Limitations](#limitations)
-12. [Future Work](#future-work)
-13. [Acknowledgements](#acknowledgements)
+3. [Project Objectives](#project-objectives)
+4. [Problem Statement](#problem-statement)
+5. [Key Features](#key-features)
+6. [System Architecture](#system-architecture)
+7. [Tech Stack](#tech-stack)
+8. [Repository Structure](#repository-structure)
+9. [Installation and Usage](#installation-and-usage)
+10. [Deployment on NVIDIA Jetson Nano](#deployment-on-nvidia-jetson-nano)
+11. [Evaluation](#evaluation)
+12. [Limitations](#limitations)
+13. [Future Work](#future-work)
+14. [Acknowledgements](#acknowledgements)
 
 ---
 
@@ -30,9 +31,17 @@ The system was developed on macOS (Ollama + TinyLlama) and deployed on an NVIDIA
 
 ## Motivation
 
-Most retrieval-augmented generation systems assume either a cloud API or a high-end GPU. That assumption excludes a large class of real deployments: factory floors with restricted networks, clinics and law offices handling confidential records, and institutions where API costs or connectivity are barriers.
+Large language models are normally run on cloud infrastructure or high-end GPUs, and most retrieval-augmented generation (RAG) systems assume the same. This project began as an effort to learn what it takes to deploy a language-model application on small, resource-constrained hardware, and to find out where such a deployment actually breaks down.
 
-This project investigates how much of a practical RAG pipeline can be made to run on a low-cost, low-power edge device (a Jetson Nano costs roughly 99 USD), and where the real constraints appear: memory, latency, and model quality at small parameter counts.
+The NVIDIA Jetson Nano (4 GB RAM, roughly 99 USD, low power draw) was chosen as the target because its limits are severe enough to force real engineering decisions about model size, quantisation, memory use, and latency. The same limits match real deployments: facilities with restricted networks, organisations handling confidential records, and settings where API costs or connectivity are barriers.
+
+## Project Objectives
+
+1. Determine whether a complete RAG pipeline (ingestion, embedding, retrieval, and generation) can run on a 4 GB edge device without any cloud dependency.
+2. Understand the practical constraints of resource-limited deployment: memory ceiling, inference latency, power draw, and the effect of 4-bit quantisation on answer quality.
+3. Learn the deployment workflow for embedded hardware, including building llama.cpp with CUDA on an ARM64 device that Ollama does not support.
+4. Design the system so that development and deployment share one codebase, with only the LLM module changing between macOS and the Jetson Nano.
+5. Measure and report performance honestly, so the results show both what works and what does not.
 
 ## Problem Statement
 
